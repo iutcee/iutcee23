@@ -8821,13 +8821,20 @@ try { if (navigator.storage && navigator.storage.persist) navigator.storage.pers
   function load() {
     return Promise.all([
       fetch('data.json?' + Date.now() + 'b', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
-      sbGet('announcements', 'select=*'), sbGet('class_changes', 'select=*'),
-    ]).then(([j, a, c]) => {
+      sbGet('announcements', 'select=*'), sbGet('class_changes', 'select=*'), sbGet('quizzes', 'select=*'),
+    ]).then(([j, a, c, q]) => {
       if (a === null || c === null) return;
       j = j || {};
       const fa = (Array.isArray(j.announcements) ? j.announcements : []).concat(a.map((x) => ({ id: 'db-' + x.id, title: x.title, body: x.body, date: x.date, pinned: x.pinned, until: x.until, link: x.link })));
       const fc = (Array.isArray(j.changes) ? j.changes : []).concat(c.map((x) => ({ id: 'db-' + x.id, type: x.type, date: x.date, code: x.code, section: x.section, start: x.start_time, end: x.end_time, room: x.room, note: x.note })));
       news = { ann: fa, changes: fc };
+      if (q !== null) {
+        const t0 = today();
+        const evs = q.filter((x) => x.date >= t0).map((x) => ({ id: 'dbq-' + x.id, code: x.code, date: x.date, title: x.code + ' · ' + title(x.code), kind: 'Quiz', audience: x.section || 'Both', minute: mins(x.start_time || '13:00'), rooms: { A: x.room || '', B: x.room || '' }, lead: 120, syllabus: x.syllabus || '' }));
+        const old = state.centralQuizIds || [];
+        state.events = (state.events || []).filter((e) => !old.includes(e.id)).concat(evs);
+        state.centralQuizIds = evs.map((e) => e.id);
+      }
       apply(fc); persist(); render(); inject();
     });
   }
@@ -8840,7 +8847,7 @@ try { if (navigator.storage && navigator.storage.persist) navigator.storage.pers
 (function () {
   const { url: SB, key: KEY } = window.__ceeSB;
   const SK = 'cee-admin-session';
-  let open = false, msg = '', items = { a: [], c: [] }, busy = false;
+  let open = false, msg = '', items = { a: [], c: [], q: [] }, busy = false;
   const ses = () => { try { return JSON.parse(localStorage.getItem(SK) || 'null'); } catch (e) { return null; } };
   const setSes = (s) => { try { s ? localStorage.setItem(SK, JSON.stringify(s)) : localStorage.removeItem(SK); } catch (e) {} };
   const pack = (d) => ({ access_token: d.access_token, refresh_token: d.refresh_token, expires_at: Date.now() + (d.expires_in || 3600) * 1000, email: d.user && d.user.email });
@@ -8860,7 +8867,7 @@ try { if (navigator.storage && navigator.storage.persist) navigator.storage.pers
     return r.json().catch(() => []);
   }
   async function refreshItems() {
-    try { items = { a: await api('GET', 'announcements?select=*&order=created_at.desc&limit=8'), c: await api('GET', 'class_changes?select=*&order=date.desc&limit=10') }; } catch (e) { msg = e.message; }
+    try { items = { a: await api('GET', 'announcements?select=*&order=created_at.desc&limit=8'), c: await api('GET', 'class_changes?select=*&order=date.desc&limit=10'), q: await api('GET', 'quizzes?select=*&order=date.desc&limit=8').catch(() => []) }; } catch (e) { msg = e.message; }
   }
   async function signIn() {
     const email = document.getElementById('admEmail').value.trim(), pw = document.getElementById('admPw').value;
@@ -8878,6 +8885,9 @@ try { if (navigator.storage && navigator.storage.persist) navigator.storage.pers
       if (kind === 'ann') {
         if (!val('admTitle').trim()) throw new Error('Add a title.');
         await api('POST', 'announcements', { title: val('admTitle').trim(), body: val('admBody').trim(), link: val('admLink').trim() || null, pinned: document.getElementById('admPin').checked, until: val('admUntil') || null });
+      } else if (kind === 'quiz') {
+        if (!val('qzDate') || !val('qzCode')) throw new Error('Choose a course and a date.');
+        await api('POST', 'quizzes', { code: val('qzCode'), date: val('qzDate'), start_time: val('qzTime') || '13:00', section: val('qzSec'), room: val('qzRoom').trim() || null, syllabus: val('qzSyl').trim() || null });
       } else {
         const type = val('chType'), st = val('chStart'), en = val('chEnd'), room = val('chRoom').trim();
         if (!val('chDate') || !val('chCode')) throw new Error('Choose a date and a course.');
@@ -8901,7 +8911,8 @@ try { if (navigator.storage && navigator.storage.persist) navigator.storage.pers
     return '<h3>Admin</h3><p class="sub">Signed in as ' + esc(s.email || '') + '</p><div class="adm-msg">' + esc(msg) + '</div>'
       + '<h3>Post an announcement</h3><input id="admTitle" placeholder="Title"><textarea id="admBody" rows="3" placeholder="Message"></textarea><input id="admLink" placeholder="Link (optional)"><div class="row2"><label><input id="admPin" type="checkbox"> Pin to top</label><input id="admUntil" type="date" title="Hide after"></div><button type="button" data-adm="ann">Post announcement</button>'
       + '<h3>Class change</h3><div class="row2"><select id="chType">' + o(['cancel', 'reschedule', 'room', 'makeup']) + '</select><select id="chSec">' + o(['Both', 'A', 'B']) + '</select></div><select id="chCode">' + o(codes) + '</select><input id="chDate" type="date"><div class="row2"><input id="chStart" type="time" title="Start"><input id="chEnd" type="time" title="End"></div><input id="chRoom" placeholder="Room (optional)"><input id="chNote" placeholder="Note (optional)"><button type="button" data-adm="chg">Post class change</button>'
-      + '<h3>Recent posts</h3>' + (items.a.map((x) => '<div class="adm-item"><span>' + esc(x.title) + '</span><button type="button" class="secondary" data-adm="dela" data-id="' + x.id + '">Delete</button></div>').join('') + items.c.map((x) => '<div class="adm-item"><span>' + esc(x.type + ' · ' + x.code + ' · ' + x.date) + '</span><button type="button" class="secondary" data-adm="delc" data-id="' + x.id + '">Delete</button></div>').join('') || '<p class="sub">Nothing yet.</p>')
+      + '<h3>Add a quiz</h3><select id="qzCode">' + o(codes) + '</select><div class="row2"><input id="qzDate" type="date"><input id="qzTime" type="time" value="13:00"></div><div class="row2"><select id="qzSec">' + o(['Both', 'A', 'B']) + '</select><input id="qzRoom" placeholder="Room"></div><textarea id="qzSyl" rows="2" placeholder="Syllabus (optional)"></textarea><button type="button" data-adm="quiz">Add quiz</button>'
+      + '<h3>Recent posts</h3>' + items.q.map((x) => '<div class="adm-item"><span>' + esc('quiz · ' + x.code + ' · ' + x.date) + '</span><button type="button" class="secondary" data-adm="delq" data-id="' + x.id + '">Delete</button></div>').join('') + + (items.a.map((x) => '<div class="adm-item"><span>' + esc(x.title) + '</span><button type="button" class="secondary" data-adm="dela" data-id="' + x.id + '">Delete</button></div>').join('') + items.c.map((x) => '<div class="adm-item"><span>' + esc(x.type + ' · ' + x.code + ' · ' + x.date) + '</span><button type="button" class="secondary" data-adm="delc" data-id="' + x.id + '">Delete</button></div>').join('') || '<p class="sub">Nothing yet.</p>')
       + '<button type="button" class="secondary" data-adm="out">Sign out</button>';
   }
   function paint() { const d = document.getElementById('ceeAdmin'); if (d) d.innerHTML = html(); }
@@ -8917,6 +8928,8 @@ try { if (navigator.storage && navigator.storage.persist) navigator.storage.pers
     else if (k === 'login') signIn();
     else if (k === 'ann') save('ann');
     else if (k === 'chg') save('chg');
+    else if (k === 'quiz') save('quiz');
+    else if (k === 'delq') del('quizzes', b.dataset.id);
     else if (k === 'dela') del('announcements', b.dataset.id);
     else if (k === 'delc') del('class_changes', b.dataset.id);
     else if (k === 'out') { setSes(null); msg = ''; open = false; paint(); }
